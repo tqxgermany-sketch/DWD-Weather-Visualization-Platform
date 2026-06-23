@@ -1,8 +1,8 @@
 """
-数据库查询与导出工具
-====================
-提供从本地 SQLite 读取、聚合、导出气象数据的工具函数
-供 UI 层和数据分析层调用
+Database query and export utilities
+====================================
+Provides functions for reading, aggregating, and exporting weather data
+from the local SQLite database. Used by the UI layer and analysis modules.
 """
 
 import sqlite3
@@ -15,7 +15,7 @@ from dwd_fetcher import DB_PATH, log
 
 
 def get_stations(db_path: Path = DB_PATH) -> pd.DataFrame:
-    """返回数据库中所有已存储的气象站列表"""
+    """Return all weather stations stored in the database."""
     conn = sqlite3.connect(db_path)
     df = pd.read_sql_query("SELECT * FROM stations", conn)
     conn.close()
@@ -23,7 +23,7 @@ def get_stations(db_path: Path = DB_PATH) -> pd.DataFrame:
 
 
 def get_available_parameters(station_id: str, db_path: Path = DB_PATH) -> list[str]:
-    """返回某站点在数据库中已有数据的参数列表"""
+    """Return the list of parameters that have data for a given station."""
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute(
@@ -36,7 +36,7 @@ def get_available_parameters(station_id: str, db_path: Path = DB_PATH) -> list[s
 
 
 def get_date_range(station_id: str, parameter: str, db_path: Path = DB_PATH) -> tuple:
-    """返回某站点某参数在数据库中的数据时间范围"""
+    """Return the data time range (min, max) for a given station and parameter."""
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute("""
@@ -57,9 +57,9 @@ def query_daily_avg(
     db_path: Path = DB_PATH,
 ) -> pd.DataFrame:
     """
-    查询日平均值（将小时数据聚合为日数据）
+    Query daily averages (aggregates hourly data to daily).
 
-    返回: DataFrame，含 date / value_avg / value_min / value_max
+    Returns: DataFrame with date / value_avg / value_min / value_max / count
     """
     conn = sqlite3.connect(db_path)
 
@@ -103,12 +103,13 @@ def export_to_csv(
     db_path: Path = DB_PATH,
 ) -> Path:
     """
-    将查询结果导出为 CSV 文件
+    Export query results as a CSV file.
 
-    参数:
-        resolution: "hourly" 或 "daily"
-    返回:
-        输出文件路径
+    Args:
+        resolution: "hourly" or "daily"
+
+    Returns:
+        Output file path
     """
     from dwd_fetcher import query_data
 
@@ -121,7 +122,7 @@ def export_to_csv(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(output_path, index=False, encoding="utf-8-sig")
 
-    log.info("数据已导出: %s (%d 行)", output_path, len(df))
+    log.info("Data exported: %s (%d rows)", output_path, len(df))
     return output_path
 
 
@@ -131,7 +132,7 @@ def get_monthly_stats(
     year: int,
     db_path: Path = DB_PATH,
 ) -> pd.DataFrame:
-    """按月统计某年的气象数据均值"""
+    """Return monthly statistics (avg/min/max) for a given station, parameter, and year."""
     conn = sqlite3.connect(db_path)
 
     query = """
