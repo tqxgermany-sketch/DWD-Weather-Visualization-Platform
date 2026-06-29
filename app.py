@@ -75,6 +75,47 @@ st.caption(
     f"Period: {DATE_MIN.date()} ~ {DATE_MAX.date()}"
 )
 
+# ─── Environment diagnostic (shown if packages missing or DWD unreachable) ──
+with st.expander(" System Check (click to verify environment)", expanded=False):
+    import importlib, urllib.request, ssl
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.write("**Python packages:**")
+        required_pkgs = ["streamlit", "pandas", "plotly", "wetterdienst", "geopy", "aiohttp"]
+        all_ok = True
+        for pkg in required_pkgs:
+            try:
+                importlib.import_module(pkg)
+                st.write(f"  ✅ {pkg}")
+            except ImportError:
+                st.write(f"  ❌ {pkg}  —  **missing**, run in terminal:")
+                st.code(f"pip install {pkg}", language="bash")
+                all_ok = False
+        if all_ok:
+            st.success("All packages installed.")
+
+    with col2:
+        st.write("**DWD server connectivity:**")
+        try:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            urllib.request.urlopen("https://opendata.dwd.de", timeout=8, context=ctx)
+            st.write("  ✅ opendata.dwd.de is reachable")
+        except Exception as net_e:
+            st.write(f"  ❌ Cannot reach DWD server:")
+            st.code(str(net_e), language="text")
+            st.caption("Check internet connection or firewall settings.")
+
+    st.divider()
+    st.write("**wetterdienst version:**")
+    try:
+        import wetterdienst
+        st.write(f"  wetterdienst {wetterdienst.__version__}")
+    except Exception:
+        st.write("  (unable to determine)")
+
 # ══════════════════════════════════════════════════════════════════════════
 # Sidebar — Configuration panel
 # ══════════════════════════════════════════════════════════════════════════
@@ -191,6 +232,13 @@ with st.sidebar:
                     f"\u2022 {sname} [{sid}] \u2014 {PARAM_LABELS[p]}: {dfrom} ~ {dto}"
                 )
 
+    # ── Debug info (remove after fixing) ──
+    st.divider()
+    with st.expander("\U0001f527 Debug info"):
+        st.write("session_state keys:", list(st.session_state.keys()))
+        st.write("active_station:", st.session_state.get("active_station"))
+        st.write("DB stations:", get_stations()["station_id"].tolist() if not get_stations().empty else "empty")
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # Main area — Data display
@@ -229,68 +277,79 @@ if fetch_btn:
                 f"Records written: {result['records_inserted']}"
             )
         except Exception as e:
+            import traceback
             st.error(f"\u274c Fetch failed: {e}")
+            with st.expander("\U0001f527 Error details (send this to the developer)"):
+                st.code(traceback.format_exc(), language="text")
             st.session_state["data_loaded"] = False
 
 
 # ── Load data from local DB ──
-def _load_data(filter_start=None, filter_end=None):
-    """Load data from the local SQLite database for the selected parameters.
-    If filter_start/filter_end are provided, only data within that range is loaded.
+def _load_data(station_id: str, filter_start=None, filter_end=None):
+    """Load data for a specific station from the local SQLite database.
+
+    Only loads data for the given station_id within the specified date range.
+    This ensures the chart always reflects the station the user just fetched,
+    not whatever happened to be first in the database.
     """
-    all_data = {}
     stations_df = get_stations()
     if stations_df.empty:
-        return all_data
+        return None
 
-    # Fallback: if no filter is given, use the DB's full range for each station
+    row = stations_df[stations_df["station_id"].astype(str) == str(station_id)]
+    if row.empty:
+        return None
+    station_row = row.iloc[0]
+
     query_start = datetime.combine(filter_start, datetime.min.time()) if filter_start else DATE_MIN
     query_end   = datetime.combine(filter_end,   datetime.min.time()) if filter_end   else DATE_MAX
 
-    for _, station_row in stations_df.iterrows():
-        sid = station_row["station_id"]
-        for p in params_selected:
-            date_from, date_to = get_date_range(sid, p)
-            if date_from is None:
-                continue
-            df = query_daily_avg(
-                sid, p,
-                query_start,
-                query_end,
-            )
-            if not df.empty:
-                sid = str(sid)
-                if sid not in all_data:
-                    all_data[sid] = {
-                        "name": station_row["name"],
-                        "lat":  station_row["lat"],
-                        "lon":  station_row["lon"],
-                        "data": {},
-                    }
-                all_data[sid]["data"][p] = df
-    return all_data
+    station_data = {
+        "name": station_row["name"],
+        "lat":  station_row["lat"],
+        "lon":  station_row["lon"],
+        "data": {},
+    }
+
+    for p in params_selected:
+        date_from, _ = get_date_range(str(station_id), p)
+        if date_from is None:
+            continue
+        df = query_daily_avg(str(station_id), p, query_start, query_end)
+        if not df.empty:
+            station_data["data"][p] = df
+
+    return station_data if station_data["data"] else None
 
 
-all_data = _load_data(filter_start=start_date, filter_end=end_date)
+# ── Determine which station to display ──
+# Priority: last fetch result stored in session_state → fallback to first in DB
+selected_sid = st.session_state.get("active_station", None)
 
-if not all_data:
+if selected_sid is None:
+    # No fetch yet this session — pick the first available station in DB
+    stations_df = get_stations()
+    if not stations_df.empty:
+        selected_sid = str(stations_df.iloc[0]["station_id"])
+
+if selected_sid is None:
     st.info(
-        "\U0001f448 Set parameters in the sidebar and click \u2018Fetch Data\u2019, "
-        "or adjust the time range to match existing data."
+        "\U0001f448 Set parameters in the sidebar and click 'Fetch Data' to load weather data."
     )
     st.stop()
 
-# ── Station selection (auto-matched, no manual picker) ──
-station_ids = list(all_data.keys())
+station_info = _load_data(
+    station_id=selected_sid,
+    filter_start=start_date,
+    filter_end=end_date,
+)
 
-# Always use the last-fetched active station
-selected_sid = station_ids[0]  # fallback
-if "active_station" in st.session_state:
-    active_sid = st.session_state["active_station"]
-    if active_sid in station_ids:
-        selected_sid = active_sid
-
-station_info = all_data[selected_sid]
+if station_info is None:
+    st.info(
+        "\U0001f448 No data found for the selected station and time range. "
+        "Click 'Fetch Data' to download data from DWD."
+    )
+    st.stop()
 
 # Station info card
 col1, col2, col3, col4 = st.columns(4)
